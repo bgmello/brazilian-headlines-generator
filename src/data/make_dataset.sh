@@ -1,8 +1,10 @@
 #!/bin/bash
-
-kaggle datasets download -d marlesson/news-of-the-site-folhauol
+echo "downloading news-of-the-site-folhauol from s3..."
+wget https://brazilian-headlines-generator.s3.amazonaws.com/news-of-the-site-folhauol.zip
 
 mv news-of-the-site-folhauol.zip ../../data/raw
 
-unzip ../../data/raw/news-of-the-site-folhauol.zip ../../data/interim -y
+unzip -o ../../data/raw/news-of-the-site-folhauol.zip -d ../../data/interim/news-of-the-site-folhauol
+
+echo "download complete!"
 
