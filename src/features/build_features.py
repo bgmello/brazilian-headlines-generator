@@ -24,7 +24,8 @@ headlines_padded_path = os.path.join(data_dir_processed, "headlines-padded")
 headlines_tokenizer_path = os.path.join(data_dir_processed, "headlines-tokenizer.pickle")
 
 texts_maxlen = 65
-headlines_maxlen = 16
+headlines_maxlen = 17
+category = 'esporte' #category of news we are going to use
 
 
 if not os.path.isfile(articles_path):
@@ -42,15 +43,11 @@ if (os.path.isfile(texts_padded_path + '.npy') and os.path.isfile(texts_tokenize
 
 folha_articles = pd.read_csv(articles_path)
 
-headlines, texts = folha_articles['title'].fillna(
-    '').tolist(), folha_articles['text'].fillna('').tolist()
+folha_articles = folha_articles[folha_articles['category']==category].dropna()
 
+headlines, texts = folha_articles['title'].tolist(), folha_articles['text'].tolist()
 
-first_paragraph_texts = [hp.get_first_paragraph(
-    stn) + ['<EOS>'] for stn in texts]
-
-
-texts_tokenizer, padded_texts = hp.tokenize_and_pad(first_paragraph_texts, maxlen=texts_maxlen)
+texts_tokenizer, padded_texts = hp.tokenize_and_pad(texts, maxlen=texts_maxlen)
 headlines_tokenizer, padded_headlines = hp.tokenize_and_pad(headlines, maxlen=headlines_maxlen)
 
 # saving preprocessed texts
