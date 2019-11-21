@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import pickle
 import tensorflow as tf
 from pathlib import Path
 from collections import deque
@@ -11,7 +12,7 @@ class AttentionLayer(tf.keras.layers.Layer):
         
         self.repeat = tf.keras.layers.RepeatVector(Tx)
         self.concat = tf.keras.layers.Concatenate(axis=-1)
-        self.fc1 = tf.keras.layers.Dense(50, activation='relu')
+        self.fc1 = tf.keras.layers.Dense(200, activation='relu')
         self.fc2 = tf.keras.layers.Dense(1, activation='tanh')
         self.activate = tf.keras.layers.Softmax(axis=1)
         self.dotor = tf.keras.layers.Dot(axes=1)
@@ -83,9 +84,11 @@ def sample_from_model(inputs, target, model, tokenizer, vocab_size):
 def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size, 
     epochs, print_every_n=100, sample_every_n=200, learning_rate=1e-3, test_split=0.1, tokenizer=None):
 
+    tf.get_logger().setLevel('INFO')
+
     PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
     ckpt_dir = os.path.join(PROJECT_ROOT, 'models', 'ckpts')
-    weights_dir = os.path.join(PROJECT_ROOT, 'models', 'weights')
+    weights_path = os.path.join(PROJECT_ROOT, 'models', 'weights-attention.hdf5')
 
     model = AttentionModel(Tx=X.shape[1], Ty=y.shape[1], input_size=vocab_size, 
         output_size=vocab_size, att_size=att_size, hidden_size=hidden_size, embed_size=embed_size)
@@ -98,6 +101,7 @@ def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size,
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_split)
 
     losses = deque(maxlen=print_every_n)
+    itr_losses = {'train': [], 'test': []}
 
     print("Start training...")
 
@@ -129,6 +133,9 @@ def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size,
                 y_test_batch = y_test[ids, ...]
                 test_loss = loss_object(y_test_batch, model(X_test_batch))/batch_size
 
+                itr_losses['train'].append(np.mean(losses))
+                itr_losses['test'].append(test_loss)
+
                 print("Epoch: {}/{} ... Avg. Train Loss: {} ... Test Loss for 1 batch: {}".format(e + 1, epochs, np.mean(losses), test_loss))
 
                 save_path = manager.save()
@@ -142,6 +149,9 @@ def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size,
                     sample_from_model(X_test, y_test, model, tokenizer, vocab_size)
                     print("\n")
 
-        model.save_weights(weights_dir)
-        print("\nModel weights stored at: {}\n".format(weights_dir))
+        model.save_weights(weights_path)
+        print("\nModel weights stored at: {}\n".format(weights_path))
+
+        with open('itr_losses.pickle', 'wb') as f:
+            pickle.dump(itr_losses, f)
 

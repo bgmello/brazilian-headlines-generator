@@ -11,15 +11,14 @@ PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
 
 class Features():
 
-    def __init__(self, texts_maxlen, headlines_maxlen, num_words, category):
+    def __init__(self, texts_maxlen, headlines_maxlen, num_words):
 
         self.texts_maxlen = texts_maxlen
         self.headlines_maxlen = headlines_maxlen
         self.num_words = num_words
-        self.category = category
         self.articles = self._download_dataset()
 
-        self.headlines, self.texts = self.get_corpus_from_category()
+        self.headlines, self.texts = self.get_corpus()
 
         self.build_features()
 
@@ -37,7 +36,7 @@ class Features():
                     run this command on the terminal: chmod a+x make_dataset.sh at the src/data folder")
                 exit()
 
-        return pd.read_csv(articles_path)
+        return pd.read_csv(articles_path).dropna()
 
     def build_features(self):
 
@@ -60,13 +59,11 @@ class Features():
             self.tokenize_and_pad()
             self.save_tokenizer_and_padded()
 
-    def get_corpus_from_category(self):
+    def get_corpus(self):
         '''
-        Returns headlines and texts as lists from specific category
+        Returns headlines and texts as lists
         '''
-        category_articles = self.articles[self.articles['category']==self.category].dropna()
-
-        return category_articles['title'].tolist(), category_articles['text'].tolist()
+        return self.articles['title'].tolist(), self.articles['text'].tolist()
 
     def tokenize_and_pad(self, padding='post', truncating='post'):
         '''
