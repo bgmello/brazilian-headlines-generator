@@ -12,10 +12,9 @@ hidden_size = 256
 embed_size = 300
 epochs = 30
 
-features = Features(texts_maxlen, headlines_maxlen, 
-	num_words)
+features = Features(texts_maxlen, headlines_maxlen)
 
-training(X=features.padded_texts, y=features.padded_headlines, 
-	att_size=att_size, hidden_size=hidden_size, vocab_size=num_words, 
-	embed_size=embed_size, tokenizer=features.tokenizer,
+training(X=features.texts, y=features.headlines, 
+	att_size=att_size, hidden_size=hidden_size, input_size=num_words, 
+	output_size=features.embed_model.vector_size, features=features,
 	epochs=epochs, batch_size=batch_size)

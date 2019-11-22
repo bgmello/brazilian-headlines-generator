@@ -3,7 +3,7 @@ import os
 import pickle
 import tensorflow as tf
 from pathlib import Path
-from collections import deque
+from gensim.models import KeyedVectors
 from sklearn.model_selection import train_test_split
 
 class AttentionLayer(tf.keras.layers.Layer):
@@ -28,13 +28,11 @@ class AttentionLayer(tf.keras.layers.Layer):
         return context
 
 class AttentionModel(tf.keras.Model):
-    def __init__(self, Tx, Ty, input_size, output_size, embed_size, att_size, hidden_size):
+    def __init__(self, Tx, Ty, input_size, output_size, att_size, hidden_size):
         super(AttentionModel, self).__init__()
         
         self.Ty = Ty
         self.hidden_size = hidden_size
-        
-        self.embed = tf.keras.layers.Embedding(input_size, embed_size)
         self.attn_layer = AttentionLayer(Tx)
         self.bidir_lstm = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(units=att_size, return_sequences=True))
         self.post_attn_lstm = tf.keras.layers.LSTM(units=hidden_size, return_state=True)
@@ -45,7 +43,6 @@ class AttentionModel(tf.keras.Model):
         s = tf.zeros(shape=(x.shape[0], self.hidden_size))
         c = tf.zeros(shape=(x.shape[0], self.hidden_size))
         
-        x = self.embed(x)
         
         a = self.bidir_lstm(x)
         outputs = []
@@ -65,43 +62,48 @@ def get_batches(X, y, batch_size):
     for i in range(0, len(X), batch_size):
         yield X[i:i+batch_size], y[i:i+batch_size]
 
-def encoded_to_sentence(stn, tokenizer):
-    enc = ' '.join([tokenizer.index_word[w] for w in stn if w!=0])
-    return enc
-
-def sample_from_model(inputs, target, model, tokenizer, vocab_size):
-    idx = np.random.choice(np.arange(len(inputs)), size=1)[0]
-    inp = inputs[idx:idx+1]
-    tar = target[idx:idx+1]
+def sample_from_model(inputs, target, model, features):
+    idx = np.random.choice(np.arange(len(inputs)), size=1)[0] 
+    inp, tar = features.embed_batch(inputs[idx:idx+1], target[idx:idx+1])
+    predictions = model(inp).numpy()[0]
+    pred = ' '.join([features.embed_model.similar_by_vector(p.reshape((300,)), topn=1)[0][0] for p in predictions])
     
-    predictions = model(inp)
-    predictions = [np.random.choice(np.arange(vocab_size), p=p.reshape(-1)) for p in predictions[0, ...].numpy()]
-    
-    print("Original text: {}".format(encoded_to_sentence(inp.reshape(-1).tolist(), tokenizer)))
-    print("Original headline: {}".format(encoded_to_sentence(tar.reshape(-1).tolist(), tokenizer)))
-    print("Generated headline: {}".format(encoded_to_sentence(predictions, tokenizer)))
+    print("Original text: {}".format(' '.join(inputs[idx].split()[:features.headlines_maxlen])))
+    print("Original headline: {}".format(' '.join(target[idx].split()[:features.texts_maxlen])))
+    print("Generated headline: {}".format(pred))
 
-def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size, 
-    epochs, print_every_n=100, sample_every_n=200, learning_rate=1e-3, test_split=0.1, tokenizer=None):
+@tf.function
+def train_step(inputs, targets, model, optimizer, train_loss):
+    with tf.GradientTape() as tape:
+        outputs = model(inputs)
+        loss = tf.keras.losses.mean_squared_error(targets, outputs)
 
-    tf.get_logger().setLevel('INFO')
+    grads = tape.gradient(loss, model.trainable_variables)
+
+    train_loss(loss)
+
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+
+def training(X, y, batch_size, att_size, hidden_size, input_size, output_size, 
+    epochs, features, print_every_n=100, sample_every_n=500, learning_rate=1e-3, test_split=0.1):
+
 
     PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
+
     ckpt_dir = os.path.join(PROJECT_ROOT, 'models', 'ckpts')
     weights_path = os.path.join(PROJECT_ROOT, 'models', 'weights-attention.hdf5')
 
-    model = AttentionModel(Tx=X.shape[1], Ty=y.shape[1], input_size=vocab_size, 
-        output_size=vocab_size, att_size=att_size, hidden_size=hidden_size, embed_size=embed_size)
+    model = AttentionModel(Tx=features.texts_maxlen, Ty=features.headlines_maxlen, input_size=input_size, 
+        output_size=output_size, att_size=att_size, hidden_size=hidden_size)
 
-    loss_object = tf.keras.losses.SparseCategoricalCrossentropy()
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     ckpt = tf.train.Checkpoint(step=tf.Variable(0), optimizer=optimizer, net=model)
     manager = tf.train.CheckpointManager(ckpt, ckpt_dir, max_to_keep=3)
+    train_loss = tf.keras.metrics.Mean(name='train_loss')
+    test_loss = tf.keras.metrics.Mean(name='test_loss')
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_split)
-
-    losses = deque(maxlen=print_every_n)
-    itr_losses = {'train': [], 'test': []}
 
     print("Start training...")
 
@@ -113,30 +115,29 @@ def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size,
         print("Initializing from scratch.")
 
     for e in range(epochs):
+        
+        train_loss.reset_states()
+        test_loss.reset_states()
+
         for inputs, targets in get_batches(X_train, y_train, batch_size):
 
             ckpt.step.assign_add(1)
-            with tf.GradientTape() as tape:
-                outputs = model(inputs)
-                loss = loss_object(targets, outputs)
 
-            grads = tape.gradient(loss, model.trainable_variables)
+            inputs, targets = features.embed_batch(inputs, targets)
 
-            losses.append(loss/inputs.shape[0])
-
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            train_step(inputs, targets, model, optimizer, train_loss)
 
             if int(ckpt.step) % print_every_n == 0:
 
-                ids = np.random.choice(np.arange(len(X_test)), size=batch_size)
-                X_test_batch = X_test[ids, ...]
-                y_test_batch = y_test[ids, ...]
-                test_loss = loss_object(y_test_batch, model(X_test_batch))/batch_size
+                ids = np.random.choice(np.arange(len(X_test)-batch_size), size=1)[0]
+                X_test_batch = X_test[ids:ids+batch_size]
+                y_test_batch = y_test[ids:ids+batch_size]
+                
+                X_test_batch, y_test_batch = features.embed_batch(X_test_batch, y_test_batch)
 
-                itr_losses['train'].append(np.mean(losses))
-                itr_losses['test'].append(test_loss)
+                test_loss(tf.keras.losses.mean_squared_error(y_test_batch, model(X_test_batch)))
 
-                print("Epoch: {}/{} ... Avg. Train Loss: {} ... Test Loss for 1 batch: {}".format(e + 1, epochs, np.mean(losses), test_loss))
+                print("Epoch: {}/{} ... Avg. Train Loss: {} ... Test Loss for 1 batch: {}".format(e + 1, epochs, train_loss.result(),test_loss.result()))
 
                 save_path = manager.save()
                 print("Saved checkpoint for step {}: {}".format(int(ckpt.step), save_path))
@@ -144,14 +145,10 @@ def training(X, y, batch_size, att_size, hidden_size, vocab_size, embed_size,
 
 
             if int(ckpt.step) % sample_every_n == 0:
-                if tokenizer != None:
-                    print("\n---Model Sample---")
-                    sample_from_model(X_test, y_test, model, tokenizer, vocab_size)
-                    print("\n")
+                print("\n---Model Sample---")
+                sample_from_model(X_test, y_test, model, features)
+                print("\n")
 
         model.save_weights(weights_path)
         print("\nModel weights stored at: {}\n".format(weights_path))
-
-        with open('itr_losses.pickle', 'wb') as f:
-            pickle.dump(itr_losses, f)
 

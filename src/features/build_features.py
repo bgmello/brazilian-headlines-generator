@@ -5,103 +5,84 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pickle
+import re
+import string
 import tensorflow as tf
+from gensim.models import KeyedVectors
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
 
 class Features():
 
-    def __init__(self, texts_maxlen, headlines_maxlen, num_words):
+    def __init__(self, texts_maxlen, headlines_maxlen):
 
         self.texts_maxlen = texts_maxlen
         self.headlines_maxlen = headlines_maxlen
-        self.num_words = num_words
-        self.articles = self._download_dataset()
+        self.articles, self.embed_model = self._download_datasets()
 
         self.headlines, self.texts = self.get_corpus()
 
-        self.build_features()
-
 
     @staticmethod    
-    def _download_dataset():
+    def _download_datasets():
 
         articles_path = os.path.join(PROJECT_ROOT, "data", "interim", "news-of-the-site-folhauol", "articles.csv")
+        embed_path = os.path.join(PROJECT_ROOT, "data", "interim", "glove_s300.txt")
+        embed_model_path = os.path.join(PROJECT_ROOT, "data", "interim", "embed_model.pickle")
 
-        if not os.path.isfile(articles_path):
+        if not os.path.isfile(articles_path) or not os.path.isfile(embed_path):
             try:
-                subprocess.call(['../data/make_dataset.sh'])
+                subprocess.call([os.path.join(PROJECT_ROOT, "src", "data", "make_dataset.sh")])
+                subprocess.call([os.path.join(PROJECT_ROOT, "src", "data", "make_word2vec.sh")])
             except PermissionError:
-                print("You need to give executable permission for running ../data/make_dataset.sh, \
+                print("You need to give executable permission for running ../data/make_dataset.sh and ../data/make_word2vec.sh, \
                     run this command on the terminal: chmod a+x make_dataset.sh at the src/data folder")
                 exit()
 
-        return pd.read_csv(articles_path).dropna()
-
-    def build_features(self):
-
-        data_dir_processed = os.path.join(PROJECT_ROOT, "data", "processed")
-
-        texts_padded_path = os.path.join(data_dir_processed, "texts-padded")
-        tokenizer_path = os.path.join(data_dir_processed, "tokenizer.pickle")
-        headlines_padded_path = os.path.join(data_dir_processed, "headlines-padded")
-
-        if os.path.isfile(headlines_padded_path) and os.path.isfile(texts_padded_path) and os.path.isfile(tokenizer_path):
-
-            self.padded_headlines = np.load(headlines_padded_path)
-
-            with open(tokenizer_path, 'rb') as f:
-                self.tokenizer = pickle.load(f)
-
-            self.padded_texts = np.load(texts_padded_path)
+        if not os.path.isfile(embed_model_path):
+            embed_model = KeyedVectors.load_word2vec_format(embed_path)
+            with open(embed_model_path, 'wb') as f:
+                pickle.dump(embed_model, f)
 
         else:
-            self.tokenize_and_pad()
-            self.save_tokenizer_and_padded()
+            with open(embed_model_path, 'rb') as f:
+                embed_model = pickle.load(f)
+
+        return pd.read_csv(articles_path)[['title', 'text']].dropna(), embed_model
 
     def get_corpus(self):
         '''
         Returns headlines and texts as lists
         '''
+        self.articles['title'] = self.articles['title'].apply(lambda x: re.sub(' +', ' ', x.translate(str.maketrans('', '', string.punctuation))).lower())
+        self.articles['text'] = self.articles['text'].apply(lambda x: re.sub(' +', ' ', x.translate(str.maketrans('', '', string.punctuation))).lower())
+
         return self.articles['title'].tolist(), self.articles['text'].tolist()
 
-    def tokenize_and_pad(self, padding='post', truncating='post'):
-        '''
-        Creates keras tokenizer for input_corpus and output_corpus and returns padded sequences
 
-        Args:
-                padding(string): 'post' or 'pre' type of padding to be used
-                truncating(string): 'post' or 'pre' type of truncating to be used
-        '''
+    def embed_batch(self, batch_texts, batch_headlines):
 
-        tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=self.num_words)
-        tokenizer.fit_on_texts(self.texts + self.headlines)
+        batch_embed_texts = np.zeros(shape=(len(batch_texts), self.texts_maxlen, self.embed_model.vector_size))
+        batch_embed_headlines = np.zeros(shape=(len(batch_headlines), self.headlines_maxlen, self.embed_model.vector_size))
 
-        encoded_input_corpus, encoded_output_corpus = tokenizer.texts_to_sequences(self.texts), tokenizer.texts_to_sequences(self.headlines)
+        for i, batch_text in enumerate(batch_texts):
+            for j, word in enumerate(batch_text.split()):
+                if j==self.texts_maxlen:
+                    break
 
-        padded_input_corpus = tf.keras.preprocessing.sequence.pad_sequences(encoded_input_corpus, maxlen=self.texts_maxlen, padding=padding, truncating=truncating)
-        padded_output_corpus = tf.keras.preprocessing.sequence.pad_sequences(encoded_output_corpus, maxlen=self.headlines_maxlen, padding=padding, truncating=truncating)
+                if word not in self.embed_model.vocab.keys():
+                    batch_embed_texts[i, j, :] = self.embed_model.word_vec('<unk>')
+                else:
+                    batch_embed_texts[i, j, :] = self.embed_model.word_vec(word)
 
-        self.tokenizer = tokenizer
-        self.padded_texts = padded_input_corpus
-        self.padded_headlines = padded_output_corpus
+        for i, batch_headline in enumerate(batch_headlines):
+            for j, word in enumerate(batch_headline.split()):
+                if j==self.headlines_maxlen:
+                    break
 
-    def save_tokenizer_and_padded(self):
+                if word not in self.embed_model.vocab.keys():
+                    batch_embed_headlines[i, j, :] = self.embed_model.word_vec('<unk>')
+                else:
+                    batch_embed_headlines[i, j, :] = self.embed_model.word_vec(word)
 
-        data_dir_processed = os.path.join(PROJECT_ROOT, "data", "processed")
-
-        texts_padded_path = os.path.join(data_dir_processed, "texts-padded")
-        tokenizer_path = os.path.join(data_dir_processed, "tokenizer.pickle")
-        headlines_padded_path = os.path.join(data_dir_processed, "headlines-padded")
-
-        # saving texts tokenizer
-        with open(tokenizer_path, 'wb') as f:
-            pickle.dump(self.tokenizer, f)
-        
-        # saving preprocessed texts
-        np.save(texts_padded_path, self.padded_texts)
-
-        # saving preprocessed headlines
-        np.save(headlines_padded_path, self.padded_headlines)
-
-        
+        return batch_embed_texts, batch_embed_headlines
